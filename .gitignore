@@ -1,2 +1,4 @@
-#1.) Ignores all data in training_data/raw_video
+#1.) Ignores all training data
 /training_data/raw_video/
+/training_data/raw_pics/
+/training_data/processed_pics/
