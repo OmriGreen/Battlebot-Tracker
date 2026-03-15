@@ -131,7 +131,9 @@ class transform_img:
                             #Eliminates and "Bounding lines"
                             # Eliminates vertical lines and lines below a half of the height of the arena
                             if((line[0][0]) != line[1][0] and inter_left[1] < black_sq.shape[0]//2):
-                                top_line_data.append((inter_left,inter_right))
+                                # A double check to determime that the top image doesn't exactly match the top line
+                                if(h_top[0][1] != inter_left[1] and h_top[0][1] != inter_right[1]):
+                                    top_line_data.append((inter_left,inter_right))
                 except:
                     continue
 
@@ -195,20 +197,51 @@ class transform_img:
                     print("INVALID IMAGE")
                     vertices = None
                 else:
-                    vertices = [top_left,top_right,bottom_left,bottom_right]
-                    
+                    vertices = [top_left, top_right, bottom_right, bottom_left]                    
             except:
                 print("INVALID IMAGE")
                 vertices = None
 
         #Find intersection points between hough lines
-
-
-
         return vertices, radial_Lines
 
+    # Sets up the transformation matrix for birdseye view
+    def setupTransformMatrix(self, squarePts):
+        if squarePts is None or len(squarePts) < 4:
+            print("setupTransformMatrix: Not enough points to define a square.")
+            return None
+        
+        self.squarePts = np.array(squarePts, dtype="float32")
+        # Define the destination points for the birdseye view
         
 
+        dstPts = np.array([
+            [0,   0  ],   # top-left
+            [960, 0  ],   # top-right
+            [960, 960],   # bottom-right
+            [0,   960]    # bottom-left
+        ], dtype="float32")
+
+        # Compute the perspective transformation matrix
+        self.transformMatrix = cv.getPerspectiveTransform(self.squarePts, dstPts)
+
+        return self.transformMatrix
+        
+    #Transforms the original image using the vertices
+    def transform_img(self,vertices):
+        M = self.setupTransformMatrix(vertices)
+        if (M is not None):
+            h, w = self.img.shape[:2]
+            black_sq = np.zeros((h + 250, w + 250, 3), np.uint8)
+            x_offset = 250 // 2
+            y_offset = 250 // 2
+            black_sq[y_offset:y_offset + h, x_offset:x_offset + w] = self.img
+
+            warped = cv.warpPerspective(black_sq, M, (960, 960))
+
+        else:
+            warped = None
+        return warped
         
 if __name__ == '__main__':
     raw_pics = os.listdir('raw_pics')
@@ -231,9 +264,15 @@ if __name__ == '__main__':
             try:
                 tI = transform_img(img)
                 detectVertices = tI.detect_Vertices()
-                cv.imshow("Detected Vertices", detectVertices[1])
+                transformed_img = tI.transform_img(detectVertices[0])
 
-                cv.waitKey(0)
+                if(transformed_img is not None):
+                    cv.imshow("Detected Vertices", detectVertices[1])
+                    #Gets birdseye view of the arena
+                    cv.imshow("Top View", transformed_img)
+
+
+                    cv.waitKey(0)
 
                 #Calculate the transformation matrix for the birdseye view of the arena
          
