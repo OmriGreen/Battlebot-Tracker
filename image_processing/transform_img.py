@@ -4,13 +4,13 @@ import gradio as gr
 
 # calculates the transformation matrix for the birdseye view of the arena given an image of the arena and the width of the arena in feet
 class transform_img:
-    def __init__(self, setupImg, arena_width, scale):
-        self.setupImg = setupImg
+    def __init__(self, arena_width=8.0, scale=75):
+        self.setupImg = None
         self.squarePts = None
         self.transformMatrix = None
         self.arena_width = arena_width  # width / height of the arena in feet
         self.scale = scale
-        self.M = self.setup_transform() #Transformation Matrix
+        self.M = None #Transformation Matrix
 
     # Changes to grayscale
     def grayScale(self,img):
@@ -206,9 +206,9 @@ class transform_img:
         return square
     
     # Sets up the image automatically based on the given data
-    def setup_transform(self):
+    def setup_transform(self, img):
         # Edge Detection
-        edges = self.edgeDetection(self.grayScale(self.setupImg),70,400)
+        edges = self.edgeDetection(self.grayScale(img),70,400)
         # Gets all lines from Hough Lines
         lines = self.getLines(edges)
         # merges lines
@@ -216,7 +216,7 @@ class transform_img:
 
         # finds intersection of lines to find the top segment square
         topSegment = self.find_intersections(merged_lines)
-
+        print(topSegment)
         # Finds the 2 lowest points in the lines to set as the bottom of the square
         bottomPoint = self.find_lowest_point(merged_lines)
 
