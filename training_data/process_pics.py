@@ -34,8 +34,9 @@ def find_intersection(l1,l2):
 
 
 class transform_img:
-    def __init__(self, img):
+    def __init__(self, img, buffer = 50):
         self.img = img
+        self.buffer = 50
 
    
    #Detects the vertices of the square for transforming the image to a top down view
@@ -86,8 +87,8 @@ class transform_img:
             v_right = ((grayScale.shape[1]-125,125),(grayScale.shape[1]-125,grayScale.shape[0]-125))
             # cv.line(radial_Lines,v_right[0],v_right[1],(0,0,255),3,cv.LINE_AA)
 
-            h_bottom = ((125,grayScale.shape[0]-125), (grayScale.shape[1]-125,grayScale.shape[0]-125))
-            # cv.line(radial_Lines,h_bottom[0],h_bottom[1],(0,0,255),3,cv.LINE_AA)
+            h_bottom = ((0,grayScale.shape[0]-125), (grayScale.shape[1],grayScale.shape[0]-125))
+            cv.line(radial_Lines,h_bottom[0],h_bottom[1],(0,255,255),3,cv.LINE_AA)
 
             h_top = ((125,125), (grayScale.shape[1]-125,125))
             # cv.line(radial_Lines,h_top[0],h_top[1],(0,0,255),3,cv.LINE_AA)
@@ -205,40 +206,36 @@ class transform_img:
         #Find intersection points between hough lines
         return vertices, radial_Lines
 
-    # Sets up the transformation matrix for birdseye view
     def setupTransformMatrix(self, squarePts):
         if squarePts is None or len(squarePts) < 4:
             print("setupTransformMatrix: Not enough points to define a square.")
             return None
         
         self.squarePts = np.array(squarePts, dtype="float32")
-        # Define the destination points for the birdseye view
-        
 
+        b = self.buffer
         dstPts = np.array([
-            [0,   0  ],   # top-left
-            [960, 0  ],   # top-right
-            [960, 960],   # bottom-right
-            [0,   960]    # bottom-left
+            [b,       b        ],  # top-left
+            [960 + b, b        ],  # top-right
+            [960 + b, 960 + b  ],  # bottom-right
+            [b,       960 + b  ]   # bottom-left
         ], dtype="float32")
 
-        # Compute the perspective transformation matrix
         self.transformMatrix = cv.getPerspectiveTransform(self.squarePts, dstPts)
-
         return self.transformMatrix
         
-    #Transforms the original image using the vertices
-    def transform_img(self,vertices):
+    def transform_img(self, vertices):
         M = self.setupTransformMatrix(vertices)
-        if (M is not None):
+        if M is not None:
             h, w = self.img.shape[:2]
             black_sq = np.zeros((h + 250, w + 250, 3), np.uint8)
             x_offset = 250 // 2
             y_offset = 250 // 2
             black_sq[y_offset:y_offset + h, x_offset:x_offset + w] = self.img
 
-            warped = cv.warpPerspective(black_sq, M, (960, 960))
-
+            output_size_x = 960 + 2 * self.buffer  # left and right buffer
+            output_size_y = 960 + self.buffer       # top buffer only, no bottom gap
+            warped = cv.warpPerspective(black_sq, M, (output_size_x, output_size_y))
         else:
             warped = None
         return warped
@@ -250,7 +247,10 @@ if __name__ == '__main__':
     # Uses the image_processing function transform_img to process all the raw pictures and save them in the processed_pics folder
     #Stores the normalize_image function
     nI = None
+    picNum = 0
     for pic in raw_pics:
+        #Keeps track of the pictures
+        picNum+=1
         # Reads the initial image and normalizes it's size to 540x960
         img = normalize_img(cv.imread(f'raw_pics/{pic}'))       
         
@@ -267,12 +267,23 @@ if __name__ == '__main__':
                 transformed_img = tI.transform_img(detectVertices[0])
 
                 if(transformed_img is not None):
-                    cv.imshow("Detected Vertices", detectVertices[1])
-                    #Gets birdseye view of the arena
-                    cv.imshow("Top View", transformed_img)
+                    # cv.imshow("Detected Vertices", detectVertices[1])
+                    # #Gets birdseye view of the arena
+                    # cv.imshow("Top View", transformed_img)
 
 
-                    cv.waitKey(0)
+                    # cv.waitKey(0)
+
+                    #Saves images
+                    #Only for documenting the process-saves exactly once
+                    if raw_pics[0] == pic:
+                        cv.imwrite(f'example_pics/original_img.jpg', img)
+                        cv.imwrite(f'example_pics/vertices_detected.jpg', detectVertices[1])
+                        cv.imwrite(f'example_pics/transformed_img.jpg', transformed_img)
+                    
+                    cv.imwrite(f'processed_pics/training_img_{picNum}.jpg',transformed_img)
+
+
 
                 #Calculate the transformation matrix for the birdseye view of the arena
          
