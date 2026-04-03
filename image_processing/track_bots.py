@@ -12,241 +12,87 @@ import math
 from ultralytics import YOLO
 
 import sys
+
+import utils as ut
+
 sys.path.append('../image_processing')
 
+#Calculates the time (in milliseconds) based on the frame count and fps of the video
+def calc_Time(fps,frame_count):
+    return (frame_count/fps)*1000
 
-#Resizes the image to 540x960
-def normalize_img(newImg):
-    return cv.resize(newImg,(960,540))
-        
-
-#Finds the intersection point of 2 lines
-#Input: l1 = ((x0,y0),(x1,y1)), l2 = ((x0,y0),(x1,y1))
-def find_intersection(l1,l2):
-    xdiff = (l1[0][0] - l1[1][0], l2[0][0] - l2[1][0])
-    ydiff = (l1[0][1] - l1[1][1], l2[0][1] - l2[1][1])
-
-    def det(a, b):
-        return a[0] * b[1] - a[1] * b[0]
-
-    div = det(xdiff, ydiff)
-    if div == 0:
-       return None
-
-    d = (det(*l1), det(*l2))
-    x = det(d, xdiff) / div
-    y = det(d, ydiff) / div
-    return round(x), round(y)
+# Robot Data
+class robot_Tracker:
+    """
+    Initializes the Robot Tracker and stores information on tracking the robots
+        Inputs:
+            r: results from the CV model
+            pic: an initial picutre of the arena
+    """
+    def __init__(self,r,pic):
+        self.battlebots = {}
+        self.housebot = {}
 
 
+    """
+    Extracts general data from the Compiuter Vision Model
 
-class transform_img:
-    def __init__(self, img, buffer = 50):
-        self.img = img
-        self.buffer = 50
+    Input:
+        r : resulting data from the CV model
+        pic: The image that the CV Model is analyzing
+    Output:
+        battlebot_data: A list of data containing the following information
+            ref_pic: A picture of the battlebot to match to previous reference images
+            loc: (x,y) tuple of the location in x,y coordinates in meters
+        housebot_loc: (x,y) tuple of the robot's location in x,y coordinates in meters
+    """
+    def extract_data(self,r):
+        #Extracts data from init_data
+        boxes = r.boxes
+
+        # Box Coordinates
+        xyxy = boxes.xyxy.cpu().numpy()   # [x1, y1, x2, y2]
+
+        #Labels
+        cls = boxes.cls.cpu().numpy()
+        names = r.names  # dictionary mapping id → label
+        labels = [names[int(c)] for c in cls]
+
+
+        #Raw information
+        info = {}
+        info["centroid"] = []
+        info["label"] = []
+        for bBox, class_id in zip(xyxy, cls):
+            label = names[int(class_id)]
+            info["label"].append(label)
+            info["centroid"].append(self.calc_Centroid(bBox))
+        return info
+
+    """
+    Calculates the centroid of a robot
+
+        Input: 
+            bBox: The bounding box 
+        Output:
+            (x,y): The centroid of the bounding box
+    """ 
+    def calc_Centroid(self,bBox):
+        return (
+    int((bBox[0] + bBox[2]) / 2),
+    int((bBox[1] + bBox[3]) / 2)
+    )
 
    
-   #Detects the vertices of the square for transforming the image to a top down view
-    def detect_Vertices(self):
-
-        #Checks if the image is valid for training and autonomy
-        validImg = True
-
-        #Stores all vertices
-        vertices = []
-
-        #Embeds the image into a black square for better transformations
-        h,w = self.img.shape[:2]
-
-        black_sq = np.zeros((h+250,w+250,3),np.uint8)
-
-        x_offset = (250)//2
-        y_offset = (250) //2
-
-        black_sq[y_offset:y_offset+h,x_offset:x_offset+w] = self.img
-
-        # convert the image into grayscale
-        grayScale = cv.cvtColor(black_sq,cv.COLOR_BGR2GRAY)
-
-        #Apply Guassian Blue
-        blur = cv.GaussianBlur(grayScale,(9,9),1.4)
-
-        #Detect Canny Edges
-        edges= cv.Canny(blur,threshold1=100,threshold2=200)
-
-        #Uses Hough transform to get the largest lines
-        lines = cv.HoughLines(edges, 1, np.pi / 180, 150, None, 0, 0)
-
-        # Gets the cartesian coordinates of the lines
-        radial_Lines = cv.cvtColor(grayScale, cv.COLOR_GRAY2BGR)
-        cartesian_Lines = []
-        top_lines = []
-        right_lines = []
-        top_line_data = []
-        left_line_data = []
-        right_line_data = []
-        if lines is not None:
-
-            #Gets vertical and horizontal lines for intersection tests
-            v_left = ((125,125),(125,grayScale.shape[0]-125))
-            # cv.line(radial_Lines,v_left[0],v_left[1],(0,0,255),3,cv.LINE_AA)
-
-            v_right = ((grayScale.shape[1]-125,125),(grayScale.shape[1]-125,grayScale.shape[0]-125))
-            # cv.line(radial_Lines,v_right[0],v_right[1],(0,0,255),3,cv.LINE_AA)
-
-            h_bottom = ((0,grayScale.shape[0]-125), (grayScale.shape[1],grayScale.shape[0]-125))
-            cv.line(radial_Lines,h_bottom[0],h_bottom[1],(0,255,255),3,cv.LINE_AA)
-
-            h_top = ((125,125), (grayScale.shape[1]-125,125))
-            # cv.line(radial_Lines,h_top[0],h_top[1],(0,0,255),3,cv.LINE_AA)
 
 
 
-            for i in range(0, len(lines)):
-                rho = lines[i][0][0]
-                theta = lines[i][0][1]
-                a = math.cos(theta)
-                b = math.sin(theta)
-                x0 = a * rho
-                y0 = b * rho
-
-                
-                
-                #Gets the initial points of the coordinate
-                pt1 = (int(x0 + 2000*(-b)), int(y0 + 2000*(a)))
-                pt2 = (int(x0 - 2000*(-b)), int(y0 - 2000*(a)))
-
-                line = (pt1,pt2)
-
-                # Finds intersection point with the edges of the image
-                try:
-                    inter_top = find_intersection(h_top,line)
-                    inter_bottom = find_intersection(h_bottom,line)
-                    inter_left = find_intersection(v_left,line)
-                    inter_right = find_intersection(v_right,line)                    
-                    
-                    # Detects left lines for the transformation
-                    if(inter_top[0] > 125 and inter_top[0] <= black_sq.shape[0]-125 and inter_bottom is not None):
-                        #Checks if the line is  correct and it isn't reading a false line
-                        if(inter_top[0] > inter_bottom[0]):
-                            left_line_data.append((inter_top,inter_bottom))
-                    else:
-                        #Detects right lines 
-                        if(inter_top[0] < inter_bottom[0] and max(inter_top) <= black_sq.shape[1] and min(inter_top) > 0 and  inter_bottom[0] > 0): 
-                            right_line_data.append((inter_top,inter_bottom))
-                        #Detects the top line
-                        else:
-                            #Eliminates and "Bounding lines"
-                            # Eliminates vertical lines and lines below a half of the height of the arena
-                            if((line[0][0]) != line[1][0] and inter_left[1] < black_sq.shape[0]//2):
-                                # A double check to determime that the top image doesn't exactly match the top line
-                                if(h_top[0][1] != inter_left[1] and h_top[0][1] != inter_right[1]):
-                                    top_line_data.append((inter_left,inter_right))
-                except:
-                    continue
-
-
-                            
-            #Processes all left lines to find the ideal left line by finding the rightmost top and bottom points
-            left_top = (-5,0)
-            left_bottom = (-5,0)
-            for line_data in left_line_data:
-                if line_data[0][0] > left_top[0]:
-                    left_top = line_data[0]
-                if line_data[1][0] > left_bottom[0]:
-                    left_bottom = line_data[1]
-            left_line = (left_top,left_bottom)
-            cv.line(radial_Lines,left_line[0],left_line[1],(0,0,255),3,cv.LINE_AA)
-
-            #Processes all right lines to find the ideal right line by finding the leftmost top and bottom points
-            right_top = (max(black_sq.shape),0)
-            right_bottom = (max(black_sq.shape),0)
-            for line_data in right_line_data:
-                if line_data[0][0] < right_top[0]:
-                    right_top = line_data[0]
-                if line_data[1][0] < right_bottom[0]:
-                    right_bottom = line_data[1]
-            right_line = (right_top,right_bottom)
-            cv.line(radial_Lines,right_line[0],right_line[1],(0,255,0),3,cv.LINE_AA)
-
-            # Processes all top lines to find the ideal one by finding the lowest one that fits the criteria
-            top_left = (0,0)
-            top_right = (0,0)
-            print(top_line_data)
-            for line_data in top_line_data:
-                if(line_data[0][1] > top_left[1]):
-                    top_left = line_data[0]
-                if(line_data[1][1] > top_right[1]):
-                    top_right = line_data[1]
-            top_line = (top_left,top_right)
-            cv.line(radial_Lines,top_line[0],top_line[1],(255,0,0),3,cv.LINE_AA)
-
-            # Finds the intersection points between all points
-            top_left = find_intersection(top_line, left_line)
-            top_right = find_intersection(top_line,right_line)
-            bottom_left = find_intersection(h_bottom, left_line)
-            bottom_right = find_intersection(h_bottom,right_line)
-
-            #Draws dots for visualization
-            cv.circle(radial_Lines,top_left, 10, (255,255,255), -1)
-            cv.circle(radial_Lines,top_right, 10, (255,255,255), -1)
-            cv.circle(radial_Lines,bottom_left, 10, (255,255,255), -1)
-            cv.circle(radial_Lines,bottom_right, 10, (255,255,255), -1)
-            print("++++++++++++++")
-            print(top_left)
-            print(top_right)
-            print(bottom_left)
-            print(bottom_right)
-            print("++++++++++++++")
-
-            # Last checks for validity
-            try:
-                if(min(top_left) < 0 or min(top_right) < 0 or min(bottom_left) < 0 or min(bottom_right) < 0):
-                    print("INVALID IMAGE")
-                    vertices = None
-                else:
-                    vertices = [top_left, top_right, bottom_right, bottom_left]                    
-            except:
-                print("INVALID IMAGE")
-                vertices = None
-
-        #Find intersection points between hough lines
-        return vertices, radial_Lines
-
-    def setupTransformMatrix(self, squarePts):
-        if squarePts is None or len(squarePts) < 4:
-            print("setupTransformMatrix: Not enough points to define a square.")
-            return None
         
-        self.squarePts = np.array(squarePts, dtype="float32")
 
-        b = self.buffer
-        dstPts = np.array([
-            [b,       b        ],  # top-left
-            [960 + b, b        ],  # top-right
-            [960 + b, 960 + b  ],  # bottom-right
-            [b,       960 + b  ]   # bottom-left
-        ], dtype="float32")
+    
 
-        self.transformMatrix = cv.getPerspectiveTransform(self.squarePts, dstPts)
-        return self.transformMatrix
         
-    def transform_img(self, img, vertices):
-        M = self.setupTransformMatrix(vertices)
-        if M is not None:
-            h, w = img.shape[:2]
-            black_sq = np.zeros((h + 250, w + 250, 3), np.uint8)
-            x_offset = 250 // 2
-            y_offset = 250 // 2
-            black_sq[y_offset:y_offset + h, x_offset:x_offset + w] = img
-
-            output_size_x = 960 + 2 * self.buffer  # left and right buffer
-            output_size_y = 960 + self.buffer       # top buffer only, no bottom gap
-            warped = cv.warpPerspective(black_sq, M, (output_size_x, output_size_y))
-        else:
-            warped = None
-        return warped
-
+        
 
 
 
@@ -256,6 +102,7 @@ if __name__ == '__main__':
     cv.namedWindow('image')
     fourcc = cv.VideoWriter_fourcc(*'MJPG')  
 
+
     # gets the names of all videos in the Test_Videos folder
     video_names = os.listdir('Test_Videos')
     video_names = [name for name in video_names if name.endswith('.mp4')]
@@ -264,13 +111,18 @@ if __name__ == '__main__':
     pic_counter = 0
 
     for video in video_names:
+        results = None
         pic_counter = 0
 
         frames = 0
+        frames_AI = 0
         cap = cv.VideoCapture(f'Test_Videos/{video}')
         if not cap.isOpened():
             print(f"Cannot open video {video}")
             exit()
+        
+        fps = cap.get(cv.CAP_PROP_FPS)
+
 
 
         while True:
@@ -279,16 +131,18 @@ if __name__ == '__main__':
                 print(f"Can't receive frame (stream end?). Exiting ...")
                 break
 
-            frame = normalize_img(frame)
+            frame = ut.normalize_img(frame)
             #Shows the raw video ==================================================================
-            cv.imshow('Raw Video', frame)
+            # cv.imshow('Raw Video', frame)
+
 
 
             #Shows the transformed video (No AI Detection) ============================================================
 
             #Gets the matrix transformation from the initial frame
+
             if(frames == 0):
-                tI = transform_img(frame)
+                tI = ut.transform_img(frame)
                 detectVertices = tI.detect_Vertices()
                 vertices = detectVertices[0]
 
@@ -296,29 +150,47 @@ if __name__ == '__main__':
              #Transforms the frame to a top down view
             top_view = tI.transform_img(frame,vertices)
 
-            cv.imshow("Top Down View", top_view)
+            # cv.imshow("Top Down View", top_view)
 
-            #AI Detection ==========================================================================================
-            #Assumes a 120FPS camera
+            #Robot Detection ==========================================================================================
 
-            #Takes 40ms to detect -> 60ms per detection -> about 7 frames
-            if(frames%7==0):
-                results = model(top_view)
+            #Checks robot location every 50 ms
+            if(calc_Time(fps,frames_AI) >= 50 or frames == 0):
+                results = model(top_view,conf = 0.3,verbose=False)[0]
+                frames_AI = 0
 
             #Shows results on video
-            annotated_frame = results[0].plot()
+            annotated_frame = results.plot()
 
             #Displays the frame
             cv.imshow("Robot Detection", annotated_frame)
 
+            # Robot Tracker =========================================================================================
+            if(frames == 0):
+                tracker = robot_Tracker(results,top_view)
+
+            #Extracts centroid from the top view FOR TESTING!!!!!!!!!!
+            info = tracker.extract_data(results)
+            
+            #Shows centroid on top_view
+            centroid_View = top_view
+
+            for l,c in zip(info["label"],info["centroid"]):
+                if(l == "battle_bot"):
+                    cv.circle(centroid_View,c, 63, (0,0,255), -1)
+                else:
+                    cv.circle(centroid_View,c, 63, (0,255,0), -1)
+            cv.imshow("Centroid Detection", centroid_View)
 
 
+            
 
             key = cv.waitKey(1) & 0xFF
 
             if key == ord('q'):
                 break
             frames += 1
+            frames_AI +=1
 
         print(f"Finished processing video {vid_counter}/{len(video_names)}: {video}")
 
