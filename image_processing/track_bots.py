@@ -22,6 +22,9 @@ def calc_Time(fps,frame_count):
     return (frame_count/fps)*1000
 
 # Robot Data
+"""
+Allows the software to detect which robot is which, i.e. what "Team" each robot is on
+"""
 class robot_Tracker:
     """
     Initializes the Robot Tracker and stores information on tracking the robots
@@ -30,19 +33,20 @@ class robot_Tracker:
             pic: an initial picutre of the arena
     """
     def __init__(self,r,pic):
-        self.battlebots = {}
-        self.housebot = {}
+        self.battlebots = None
+        self.housebot = None
+
 
 
     """
-    Extracts general data from the Compiuter Vision Model
+    Extracts general data from the Computer Vision Model
 
     Input:
         r : resulting data from the CV model
         pic: The image that the CV Model is analyzing
     Output:
         battlebot_data: A list of data containing the following information
-            ref_pic: A picture of the battlebot to match to previous reference images
+            ref_pic: A xyxy coordinate that will be used as an area that will be normalized for matching to an original image
             loc: (x,y) tuple of the location in x,y coordinates in meters
         housebot_loc: (x,y) tuple of the robot's location in x,y coordinates in meters
     """
@@ -61,12 +65,26 @@ class robot_Tracker:
 
         #Raw information
         info = {}
+
         info["centroid"] = []
         info["label"] = []
+        info["radius"] = []
+        info["ref_pic"] = []
+
         for bBox, class_id in zip(xyxy, cls):
+            # Generic data for both battlebots and housebots (allows for location tracking)
             label = names[int(class_id)]
+            centroid = self.calc_Centroid(bBox)
+            radius = self.calc_Radius(bBox)
             info["label"].append(label)
-            info["centroid"].append(self.calc_Centroid(bBox))
+            info["centroid"].append(centroid)
+            info["radius"].append(radius)
+
+            #Ref Pic Information (Only Really relevant for battlebots)
+            info["ref_pic"].append([centroid[0]-radius, centroid[1]-radius,
+                                centroid[0]+radius, centroid[1]+radius])
+        
+
         return info
 
     """
@@ -82,6 +100,17 @@ class robot_Tracker:
     int((bBox[0] + bBox[2]) / 2),
     int((bBox[1] + bBox[3]) / 2)
     )
+
+    """
+    Calculates the maximum radius of the robot for later matching
+        Input:
+            bBox: The bounding box
+        Output:
+            Radius: The radius of the area around the robot 
+    """
+    def calc_Radius(self,bBox):
+        return max(abs(int((bBox[0] - bBox[2]) / 2)),
+        abs(int((bBox[1] - bBox[3]) / 2)))
 
    
 
@@ -156,14 +185,10 @@ if __name__ == '__main__':
 
             #Checks robot location every 50 ms
             if(calc_Time(fps,frames_AI) >= 50 or frames == 0):
-                results = model(top_view,conf = 0.3,verbose=False)[0]
+                results = model(top_view,conf = 0.5,verbose=False)[0]
                 frames_AI = 0
 
-            #Shows results on video
-            annotated_frame = results.plot()
-
-            #Displays the frame
-            cv.imshow("Robot Detection", annotated_frame)
+            
 
             # Robot Tracker =========================================================================================
             if(frames == 0):
@@ -172,14 +197,15 @@ if __name__ == '__main__':
             #Extracts centroid from the top view FOR TESTING!!!!!!!!!!
             info = tracker.extract_data(results)
             
-            #Shows centroid on top_view
-            centroid_View = top_view
+            #Shows boxed out shell on top_view
+            box_View = top_view
 
-            for l,c in zip(info["label"],info["centroid"]):
+            for l,c,r,p in zip(info["label"],info["centroid"],info["radius"],info("ref_pic")):
                 if(l == "battle_bot"):
-                    cv.circle(centroid_View,c, 63, (0,0,255), -1)
+                    cv.rectangle(box_View,())
+                    # cv.circle(centroid_View,c, r, (0,0,255), 5)
                 else:
-                    cv.circle(centroid_View,c, 63, (0,255,0), -1)
+                    cv.circle(centroid_View,c, r, (0,255,0), 5)
             cv.imshow("Centroid Detection", centroid_View)
 
 
