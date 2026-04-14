@@ -8,4 +8,4 @@
 /training_data/processed_pics.zip
 
 #2.) Ignore all testing vides
-/image_processing/Test_Videos
+/image_processing/Test_Videos/

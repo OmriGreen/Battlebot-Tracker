@@ -18,6 +18,10 @@ import sys
 #Resizes the image to 540x960
 def normalize_img(newImg):
     return cv.resize(newImg,(960,540))
+
+#Resizes reference image to the same square size
+def normalize_ref(ref):
+    return cv.resize(ref,(250,250))
         
 
 #Finds the intersection point of 2 lines

@@ -21,21 +21,31 @@ sys.path.append('../image_processing')
 def calc_Time(fps,frame_count):
     return (frame_count/fps)*1000
 
+
 # Robot Data
-class robot_Tracker:
+class robot_Identifier:
     """
-    Initializes the Robot Tracker and stores information on tracking the robots
+    Initializes the Robot Identifier and stores information on identifying the robots
         Inputs:
-            r: results from the CV model
-            pic: an initial picutre of the arena
+            pic: an initial picture of the arena
+        Outputs:
+            self.battlebots: A dictionary containing the id, reference image, team, and current location of each battlebot
+                id: a list of numeric IDs for each battlebot
+                ref_pic: A list of reference pictures of each battlebot
+                team: A numeric value categorizing what team the battlebot is on
+                loc: The robot's current location
+
+            self.housebot_loc: Current location of the housebot
     """
-    def __init__(self,r,pic):
-        self.battlebots = {}
-        self.housebot = {}
+    def __init__(self,pic,r):
+        self.battlebots = None
+        self.housebot_loc = None
+        self.init_identifier(pic, r)
 
 
+
     """
-    Extracts general data from the Compiuter Vision Model
+    Extracts general data from the Computer Vision Model
 
     Input:
         r : resulting data from the CV model
@@ -63,10 +73,12 @@ class robot_Tracker:
         info = {}
         info["centroid"] = []
         info["label"] = []
+        info["size"] = []
         for bBox, class_id in zip(xyxy, cls):
             label = names[int(class_id)]
             info["label"].append(label)
             info["centroid"].append(self.calc_Centroid(bBox))
+            info["size"].append(self.calc_Size(bBox))
         return info
 
     """
@@ -82,8 +94,114 @@ class robot_Tracker:
     int((bBox[0] + bBox[2]) / 2),
     int((bBox[1] + bBox[3]) / 2)
     )
+    """
+    Finds the maximum size of the robot based on the bounding box
+        Input:
+            bBox: The bounding box
+        Output:
+            size: The maximum size of the robot in pixels
+    """
+    def calc_Size(self,bBox):
+        width = bBox[2] - bBox[0]
+        height = bBox[3] - bBox[1]
+        return int(max(width, height))
 
-   
+    """
+        Initializes the identifier with all relevant information for tracking the robots
+            Input:
+                img: The image that the CV model is analyzing
+            Output:
+                battlebots: A dictionary containing reference images and labels of the battlebots as well as the team of the robot, location, velocity information for each battlebot 
+                    ref_pic: A picture of the battlebot to match to previous reference images
+                    team: The team of the battlebot (0 or 1)(top or bottom)
+                    id: The numeric id of the battlebot (battle_bot)
+                    loc: The current location of the robot
+    """
+    def init_identifier(self,pic, r):
+        info = self.extract_data(r)
+        battlebots = {}
+        battlebots["ref_pic"] = []
+        battlebots["team"] = []
+        battlebots["id"] = []
+        battlebots["loc"] = []
+
+
+
+
+        id = 0
+        for centroid, size, label in zip(info["centroid"],info["size"],info["label"]):
+            if(label == "battle_bot"):
+                #Gets height and width of image for analysis
+                h, w = pic.shape[:2]
+
+
+                #Extracts an image of the robot for later reference
+                ref_y0 = int(centroid[1]-size/2)
+                ref_y1 = int(centroid[1] + size/2)
+                ref_x0 = int(centroid[0]-size/2)
+                ref_x1 = int(centroid[0] + size/2)
+
+                #Screens robot information to prevent the data from going out of bounds
+
+                #Checks if x0 is out of bounds
+                if ref_x0 < 0:
+                    ref_x1 -= ref_x0
+                    ref_x0 = 0
+
+                #Checks if y0 is out of bounds
+                if ref_y0 < 0:
+                    ref_y1 -= ref_y0
+                    ref_y0 = 0
+
+                #Checks is x1 is out of bounds
+                if ref_x1 > w:
+                    ref_x0 -= (ref_x1-w)
+                    ref_x1 = w
+
+                #Checks if y1 is out of bounds
+                if ref_y1 > h:
+                    ref_y0 -= (ref_y1-h)
+                    ref_y1 = h
+
+
+                print(ref_x0)
+                print(ref_x1)
+                print(ref_y0)
+                print(ref_y1)
+
+
+                roi = pic[ref_y0:ref_y1,ref_x0:ref_x1]
+                print("ROI RETRIEVED")
+
+                #Checks if the robot is on the top or bottom of the arena to determine its team
+                team = 0
+                #Bottom team
+                if(centroid[0] >= h/2):
+                    team = 1
+
+                #Resizes reference to the same size
+                ref_img = ut.normalize_ref(roi)
+
+                #Adds all relevant information to the reference images
+                battlebots["ref_pic"].append(ref_img)
+                battlebots["team"].append(team)
+                battlebots["id"].append(id)
+                battlebots["loc"].append(centroid)
+
+                id += 1
+            #Initializes Housebot Location value
+            else:
+                self.housebot_loc = centroid
+        
+        #Initializes battlebot information
+        self.battlebots = battlebots
+                
+
+                    
+
+
+
+
 
 
 
@@ -154,8 +272,8 @@ if __name__ == '__main__':
 
             #Robot Detection ==========================================================================================
 
-            #Checks robot location every 50 ms
-            if(calc_Time(fps,frames_AI) >= 50 or frames == 0):
+            #Checks robot location every 20 ms
+            if(calc_Time(fps,frames_AI) >= 20 or frames == 0):
                 results = model(top_view,conf = 0.3,verbose=False)[0]
                 frames_AI = 0
 
@@ -165,24 +283,30 @@ if __name__ == '__main__':
             #Displays the frame
             cv.imshow("Robot Detection", annotated_frame)
 
-            # Robot Tracker =========================================================================================
+            # Robot Identifier =========================================================================================
             if(frames == 0):
-                tracker = robot_Tracker(results,top_view)
+                identifier = robot_Identifier(top_view,results)
 
-            #Extracts centroid from the top view FOR TESTING!!!!!!!!!!
-            info = tracker.extract_data(results)
+                print(identifier.battlebots["id"])
+                print(identifier.battlebots["team"])
+
+                # for pic,id in zip(identifier.battlebots["ref_pic"], identifier.battlebots["id"]):
+                #     cv.imshow(f'Battlebot {str(id)}',pic)
+                #     cv.waitKey(0)
+
+
+            # #Extracts centroid from the top view FOR TESTING!!!!!!!!!!
+            # info = identifier.extract_data(results)
             
-            #Shows centroid on top_view
-            centroid_View = top_view
+            # #Shows centroid on top_view
+            # centroid_View = top_view
 
-            for l,c in zip(info["label"],info["centroid"]):
-                if(l == "battle_bot"):
-                    cv.circle(centroid_View,c, 63, (0,0,255), -1)
-                else:
-                    cv.circle(centroid_View,c, 63, (0,255,0), -1)
-            cv.imshow("Centroid Detection", centroid_View)
-
-
+            # for l,c,d in zip(info["label"],info["centroid"],info["size"]):
+            #     if(l == "battle_bot"):
+            #         cv.circle(centroid_View,c, int(d/2), (0,0,255), 5)
+            #     else:
+            #         cv.circle(centroid_View,c, int(d/2), (0,255,0), 5)
+            # cv.imshow("Centroid Detection", centroid_View)
             
 
             key = cv.waitKey(1) & 0xFF
@@ -192,7 +316,7 @@ if __name__ == '__main__':
             frames += 1
             frames_AI +=1
 
-        print(f"Finished processing video {vid_counter}/{len(video_names)}: {video}")
+        
 
 
  
