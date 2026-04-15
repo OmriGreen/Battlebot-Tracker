@@ -21,7 +21,8 @@ def normalize_img(newImg):
 
 #Resizes reference image to the same square size
 def normalize_ref(ref):
-    return cv.resize(ref,(250,250))
+    resized = cv.resize(ref, (50, 50))
+    return resized.astype(np.uint8)
         
 
 #Finds the intersection point of 2 lines

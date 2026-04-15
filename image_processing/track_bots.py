@@ -11,9 +11,17 @@ import math
 
 from ultralytics import YOLO
 
+import torch
+
+import clip
+
 import sys
 
 import utils as ut
+
+import time
+
+from PIL import Image
 
 sys.path.append('../image_processing')
 
@@ -38,9 +46,15 @@ class robot_Identifier:
             self.housebot_loc: Current location of the housebot
     """
     def __init__(self,pic,r):
+        #Initializes OpenAI Clip for image comparison
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model, self.preprocess = clip.load("ViT-B/32", device=self.device)
+
         self.battlebots = None
-        self.housebot_loc = None
+        self.housebot = None
         self.init_identifier(pic, r)
+
+      
 
 
 
@@ -124,11 +138,13 @@ class robot_Identifier:
         battlebots["team"] = []
         battlebots["id"] = []
         battlebots["loc"] = []
+        battlebots["size"] = [] #For identification
+
+        housebot = {}
 
 
 
-
-        id = 0
+        bot_id  = 0
         for centroid, size, label in zip(info["centroid"],info["size"],info["label"]):
             if(label == "battle_bot"):
                 #Gets height and width of image for analysis
@@ -164,38 +180,131 @@ class robot_Identifier:
                     ref_y1 = h
 
 
-                print(ref_x0)
-                print(ref_x1)
-                print(ref_y0)
-                print(ref_y1)
-
-
                 roi = pic[ref_y0:ref_y1,ref_x0:ref_x1]
-                print("ROI RETRIEVED")
-
                 #Checks if the robot is on the top or bottom of the arena to determine its team
                 team = 0
                 #Bottom team
                 if(centroid[0] >= h/2):
                     team = 1
 
-                #Resizes reference to the same size
+                #Resizes reference to the same size and then encodes it for CLIP
                 ref_img = ut.normalize_ref(roi)
+                ref_img = (ref_img * 255).astype(np.uint8) if ref_img.dtype != np.uint8 else ref_img  # ensure uint8
+                ref_img = self.preprocess(Image.fromarray(ref_img)).unsqueeze(0).to(self.device)
+                with torch.no_grad():
+                    ref_img = self.model.encode_image(ref_img)
+
 
                 #Adds all relevant information to the reference images
                 battlebots["ref_pic"].append(ref_img)
                 battlebots["team"].append(team)
-                battlebots["id"].append(id)
+                battlebots["id"].append(bot_id )
                 battlebots["loc"].append(centroid)
+                battlebots["size"].append(size)
 
-                id += 1
+                bot_id  += 1
             #Initializes Housebot Location value
             else:
-                self.housebot_loc = centroid
+                if(label == "house_bot"):
+                    housebot["loc"] = centroid
+                    housebot["size"] = size
         
-        #Initializes battlebot information
+        #Initializes battlebot and housebot information
         self.battlebots = battlebots
+        self.housebot = housebot
+
+    def update_Positions(self,pic,r):
+        info = self.extract_data(r)
+        identified_battlebot_ids = []
+        for centroid, size, label in zip(info["centroid"],info["size"],info["label"]):
+            if(label == "battle_bot"):
+                #Checks if all robots were identified
+                if(len(identified_battlebot_ids) < len(self.battlebots["id"])):
+                    #Gets height and width of image for analysis
+                    h, w = pic.shape[:2]
+
+
+                    #Extracts an image of the robot for later reference
+                    ref_y0 = int(centroid[1]-size/2)
+                    ref_y1 = int(centroid[1] + size/2)
+                    ref_x0 = int(centroid[0]-size/2)
+                    ref_x1 = int(centroid[0] + size/2)
+
+                    #Screens robot information to prevent the data from going out of bounds
+
+                    #Checks if x0 is out of bounds
+                    if ref_x0 < 0:
+                        ref_x1 -= ref_x0
+                        ref_x0 = 0
+
+                    #Checks if y0 is out of bounds
+                    if ref_y0 < 0:
+                        ref_y1 -= ref_y0
+                        ref_y0 = 0
+
+                    #Checks is x1 is out of bounds
+                    if ref_x1 > w:
+                        ref_x0 -= (ref_x1-w)
+                        ref_x1 = w
+
+                    #Checks if y1 is out of bounds
+                    if ref_y1 > h:
+                        ref_y0 -= (ref_y1-h)
+                        ref_y1 = h
+
+
+                    roi = pic[ref_y0:ref_y1,ref_x0:ref_x1]
+                    #Checks if the robot is on the top or bottom of the arena to determine its team
+                    team = 0
+                    #Bottom team
+                    if(centroid[0] >= h/2):
+                        team = 1
+
+                    #Resizes robot image to the same size as the reference image then encodes it for CLIP
+                    img = ut.normalize_ref(roi)
+                    img = (img * 255).astype(np.uint8) if img.dtype != np.uint8 else img  # ensure uint8
+                    img = self.preprocess(Image.fromarray(img)).unsqueeze(0).to(self.device)
+                    with torch.no_grad():
+                        img = self.model.encode_image(img)
+                    #Identifies the battlebot and then updates the battlebot's location
+
+                    bot_id  = self.identify_battlebot(img,identified_battlebot_ids)
+
+                    
+                    for loc, r_id in enumerate(self.battlebots["id"]):
+                        if bot_id  == r_id:
+                            self.battlebots["loc"][loc] = centroid
+                            break
                 
+                    identified_battlebot_ids.append(bot_id )
+
+                #Updates Housebot Location value since there is always one battlebot
+            else:
+                if(label == "house_bot"):
+                    self.housebot["loc"] = centroid
+                    self.housebot["size"] = size
+
+    def identify_battlebot(self,pic,identified_battlebot_ids):
+        robot_id  = -1
+        robot_similarity = -1
+        # Goes through battlebot data and finds the most similar one
+        for id, ref_pic in zip(self.battlebots["id"], self.battlebots["ref_pic"]):
+            #Doesn't examine already identified robots
+            if(id not in identified_battlebot_ids):
+                #Finds the similarity between the reference picture and the battlebot
+                similarity = (pic @ ref_pic.T).item()
+
+                #Checks if it is the greatest similarity
+                if robot_similarity < similarity:
+                    robot_id = id
+                    robot_similarity = similarity
+                
+        return robot_id
+
+    #Returns the data on the battlebots and housebot for identification and graphing
+    def retrieve_data(self):
+        return self.battlebots, self.housebot
+    
 
                     
 
@@ -244,6 +353,7 @@ if __name__ == '__main__':
 
 
         while True:
+            start = time.perf_counter() # More precise than time.time()
             ret, frame = cap.read()
             if not ret:
                 print(f"Can't receive frame (stream end?). Exiting ...")
@@ -272,8 +382,8 @@ if __name__ == '__main__':
 
             #Robot Detection ==========================================================================================
 
-            #Checks robot location every 20 ms
-            if(calc_Time(fps,frames_AI) >= 20 or frames == 0):
+            #Checks robot location every 125 ms
+            if(calc_Time(fps,frames_AI) >= 125 or frames == 0):
                 results = model(top_view,conf = 0.3,verbose=False)[0]
                 frames_AI = 0
 
@@ -281,32 +391,46 @@ if __name__ == '__main__':
             annotated_frame = results.plot()
 
             #Displays the frame
-            cv.imshow("Robot Detection", annotated_frame)
+            # cv.imshow("Robot Detection", annotated_frame)
 
             # Robot Identifier =========================================================================================
             if(frames == 0):
                 identifier = robot_Identifier(top_view,results)
 
-                print(identifier.battlebots["id"])
-                print(identifier.battlebots["team"])
 
-                # for pic,id in zip(identifier.battlebots["ref_pic"], identifier.battlebots["id"]):
-                #     cv.imshow(f'Battlebot {str(id)}',pic)
-                #     cv.waitKey(0)
-
-
-            # #Extracts centroid from the top view FOR TESTING!!!!!!!!!!
-            # info = identifier.extract_data(results)
             
-            # #Shows centroid on top_view
-            # centroid_View = top_view
+            #Extracts centroid from the top view FOR TESTING!!!!!!!!!!
+            info = identifier.extract_data(results)
 
+            #Identifies robot position
+            identifier.update_Positions(top_view,results)
+            
+            #Shows identified robot IDs on top_view
+            identified = top_view
+
+            #gets robot data
+            battlebots, housebot = identifier.retrieve_data()
+            #Draws identification data for the housebot
+            cv.circle(identified,housebot["loc"],int(housebot["size"]/2), (0,255,0), 5)
+            
+            #Draws identification data for the battlebots
+            for l,d,t,rob_id in zip(battlebots["loc"],battlebots["size"],battlebots["team"],battlebots["id"]):
+                if(t == 0):
+                    cv.circle(identified,l, int(d/2), (0,0,255), 5)
+                else:
+                    cv.circle(identified,l, int(d/2), (255,0,0), 5)
+                
+
+            end = time.perf_counter()
+            print(f"Inference Time: {end - start:.4f} seconds")
             # for l,c,d in zip(info["label"],info["centroid"],info["size"]):
             #     if(l == "battle_bot"):
-            #         cv.circle(centroid_View,c, int(d/2), (0,0,255), 5)
+            #         cv.circle(identified,c, int(d/2), (0,0,255), 5)
             #     else:
-            #         cv.circle(centroid_View,c, int(d/2), (0,255,0), 5)
-            # cv.imshow("Centroid Detection", centroid_View)
+            #         cv.circle(identified,c, int(d/2), (0,255,0), 5)
+            cv.imshow("Centroid Detection", identified)
+
+
             
 
             key = cv.waitKey(1) & 0xFF
