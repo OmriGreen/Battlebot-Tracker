@@ -23,6 +23,8 @@ import time
 
 from PIL import Image
 
+import math 
+
 sys.path.append('../image_processing')
 
 #Calculates the time (in milliseconds) based on the frame count and fps of the video
@@ -30,296 +32,376 @@ def calc_Time(fps,frame_count):
     return (frame_count/fps)*1000
 
 
-# Robot Data
-class robot_Identifier:
-    """
-    Initializes the Robot Identifier and stores information on identifying the robots
-        Inputs:
-            pic: an initial picture of the arena
-        Outputs:
-            self.battlebots: A dictionary containing the id, reference image, team, and current location of each battlebot
-                id: a list of numeric IDs for each battlebot
-                ref_pic: A list of reference pictures of each battlebot
-                team: A numeric value categorizing what team the battlebot is on
-                loc: The robot's current location
-
-            self.housebot_loc: Current location of the housebot
-    """
-    def __init__(self,pic,r):
-        #Initializes OpenAI Clip for image comparison
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model, self.preprocess = clip.load("ViT-B/32", device=self.device)
-
-        self.battlebots = None
-        self.housebot = None
-        self.init_identifier(pic, r)
-
-      
-
-
-
-    """
-    Extracts general data from the Computer Vision Model
-
+"""
+extract_loc:
+    Description: Extracts the location of all the robots from the result of the YOLO network for later processing
     Input:
         r : resulting data from the CV model
-        pic: The image that the CV Model is analyzing
     Output:
-        battlebot_data: A list of data containing the following information
-            ref_pic: A picture of the battlebot to match to previous reference images
-            loc: (x,y) tuple of the location in x,y coordinates in meters
-        housebot_loc: (x,y) tuple of the robot's location in x,y coordinates in meters
-    """
-    def extract_data(self,r):
-        #Extracts data from init_data
-        boxes = r.boxes
+        battlebot_loc: A list of data containing the following information
+            loc: (x,y) tuple of the location in x,y coordinates in pixels
+            id: A numerical ID representing the robot
+        housebot_loc:  (x,y) tuple of the location in x,y coordinates in pixels
+"""
+def extract_loc(r):
+    #Extracts data from init_data
+    boxes = r.boxes
 
-        # Box Coordinates
-        xyxy = boxes.xyxy.cpu().numpy()   # [x1, y1, x2, y2]
+    # Box Coordinates
+    xyxy = boxes.xyxy.cpu().numpy()   # [x1, y1, x2, y2]
 
-        #Labels
-        cls = boxes.cls.cpu().numpy()
-        names = r.names  # dictionary mapping id → label
-        labels = [names[int(c)] for c in cls]
+    #Robot Ids
+    idents = boxes.id.int().cpu().tolist()
 
+    #Labels
+    cls = boxes.cls.cpu().numpy()
+    names = r.names  # dictionary mapping id → label
+    labels = [names[int(c)] for c in cls]
 
-        #Raw information
-        info = {}
-        info["centroid"] = []
-        info["label"] = []
-        info["size"] = []
-        for bBox, class_id in zip(xyxy, cls):
-            label = names[int(class_id)]
-            info["label"].append(label)
-            info["centroid"].append(self.calc_Centroid(bBox))
-            info["size"].append(self.calc_Size(bBox))
-        return info
+    #Extracting Battlebot locations
+    battlebot_data = {}
+    battlebot_data["loc"] = []
+    battlebot_data["id"] = []
 
-    """
-    Calculates the centroid of a robot
+    #Extracting Housebot location
+    housebot_loc = []
 
-        Input: 
-            bBox: The bounding box 
-        Output:
-            (x,y): The centroid of the bounding box
-    """ 
-    def calc_Centroid(self,bBox):
-        return (
-    int((bBox[0] + bBox[2]) / 2),
-    int((bBox[1] + bBox[3]) / 2)
-    )
-    """
-    Finds the maximum size of the robot based on the bounding box
-        Input:
-            bBox: The bounding box
-        Output:
-            size: The maximum size of the robot in pixels
-    """
-    def calc_Size(self,bBox):
-        width = bBox[2] - bBox[0]
-        height = bBox[3] - bBox[1]
-        return int(max(width, height))
+    #Extracting Data
+    print("DETECTION DEBUG")
+    for bound, label,ident in zip(xyxy,labels,idents):
+        #Calculates the location
+        x_loc = round((bound[0]+bound[2])/2)
+        y_loc = round((bound[1]+bound[3])/2)
 
-    """
-        Initializes the identifier with all relevant information for tracking the robots
-            Input:
-                img: The image that the CV model is analyzing
-            Output:
-                battlebots: A dictionary containing reference images and labels of the battlebots as well as the team of the robot, location, velocity information for each battlebot 
-                    ref_pic: A picture of the battlebot to match to previous reference images
-                    team: The team of the battlebot (0 or 1)(top or bottom)
-                    id: The numeric id of the battlebot (battle_bot)
-                    loc: The current location of the robot
-    """
-    def init_identifier(self,pic, r):
-        info = self.extract_data(r)
-        battlebots = {}
-        battlebots["ref_pic"] = []
-        battlebots["team"] = []
-        battlebots["id"] = []
-        battlebots["loc"] = []
-        battlebots["size"] = [] #For identification
+        loc = (x_loc,y_loc)
 
-        housebot = {}
+        #If the robot detected is a battlebot
+        if(label == "battle_bot"):
+            battlebot_data["loc"].append(loc)
+            battlebot_data["id"].append(ident)
+           
+        #If the robot detected is a housebot
+        if(label == "house_bot"):
+            housebot_loc = loc
+         
 
-
-
-        bot_id  = 0
-        for centroid, size, label in zip(info["centroid"],info["size"],info["label"]):
-            if(label == "battle_bot"):
-                #Gets height and width of image for analysis
-                h, w = pic.shape[:2]
-
-
-                #Extracts an image of the robot for later reference
-                ref_y0 = int(centroid[1]-size/2)
-                ref_y1 = int(centroid[1] + size/2)
-                ref_x0 = int(centroid[0]-size/2)
-                ref_x1 = int(centroid[0] + size/2)
-
-                #Screens robot information to prevent the data from going out of bounds
-
-                #Checks if x0 is out of bounds
-                if ref_x0 < 0:
-                    ref_x1 -= ref_x0
-                    ref_x0 = 0
-
-                #Checks if y0 is out of bounds
-                if ref_y0 < 0:
-                    ref_y1 -= ref_y0
-                    ref_y0 = 0
-
-                #Checks is x1 is out of bounds
-                if ref_x1 > w:
-                    ref_x0 -= (ref_x1-w)
-                    ref_x1 = w
-
-                #Checks if y1 is out of bounds
-                if ref_y1 > h:
-                    ref_y0 -= (ref_y1-h)
-                    ref_y1 = h
-
-
-                roi = pic[ref_y0:ref_y1,ref_x0:ref_x1]
-                #Checks if the robot is on the top or bottom of the arena to determine its team
-                team = 0
-                #Bottom team
-                if(centroid[0] >= h/2):
-                    team = 1
-
-                #Resizes reference to the same size and then encodes it for CLIP
-                ref_img = ut.normalize_ref(roi)
-                ref_img = (ref_img * 255).astype(np.uint8) if ref_img.dtype != np.uint8 else ref_img  # ensure uint8
-                ref_img = self.preprocess(Image.fromarray(ref_img)).unsqueeze(0).to(self.device)
-                with torch.no_grad():
-                    ref_img = self.model.encode_image(ref_img)
-
-
-                #Adds all relevant information to the reference images
-                battlebots["ref_pic"].append(ref_img)
-                battlebots["team"].append(team)
-                battlebots["id"].append(bot_id )
-                battlebots["loc"].append(centroid)
-                battlebots["size"].append(size)
-
-                bot_id  += 1
-            #Initializes Housebot Location value
-            else:
-                if(label == "house_bot"):
-                    housebot["loc"] = centroid
-                    housebot["size"] = size
+    return battlebot_data, housebot_loc
         
-        #Initializes battlebot and housebot information
-        self.battlebots = battlebots
-        self.housebot = housebot
+"""
+find_scale: Calculates the scale from pixels to feet from the top down view
+    Inputs: 
+        image_size: (width,height)
+            width: the initial width of the image
+            height: the initial height of the image
+        buffer: the initial offset size in pixels from Utils (125 px)
+        nn_size: (width,height)
+            width: the initial width of the image
+            height: the initial height of the image
+        arena_size: a double containing the width/size of the arena in feet (NHRL arena is a square measured in feet can be changed)
+    Outputs:
+        scale: a double when multiplied by the pixel value goes to the actual location
+        arena_bounds: (x1,y1,x2,y2) for determining if a location is outside the arena
+"""
+def find_scale(initial_size = (1060,1010),buffer=50,nn_size = (400,381),arena_size = 8):
+    #Gets the initial arena_bounds not from the nn_scale
+    init_x1 = buffer
+    init_x2 = initial_size[0]-buffer
+    init_y1 = 0
+    init_y2 = initial_size[1]-buffer
 
-    def update_Positions(self,pic,r):
-        info = self.extract_data(r)
-        identified_battlebot_ids = []
-        for centroid, size, label in zip(info["centroid"],info["size"],info["label"]):
-            if(label == "battle_bot"):
-                #Checks if all robots were identified
-                if(len(identified_battlebot_ids) < len(self.battlebots["id"])):
-                    #Gets height and width of image for analysis
-                    h, w = pic.shape[:2]
+    init_bounds = [init_x1,init_y1,init_x2,init_y2]
 
-
-                    #Extracts an image of the robot for later reference
-                    ref_y0 = int(centroid[1]-size/2)
-                    ref_y1 = int(centroid[1] + size/2)
-                    ref_x0 = int(centroid[0]-size/2)
-                    ref_x1 = int(centroid[0] + size/2)
-
-                    #Screens robot information to prevent the data from going out of bounds
-
-                    #Checks if x0 is out of bounds
-                    if ref_x0 < 0:
-                        ref_x1 -= ref_x0
-                        ref_x0 = 0
-
-                    #Checks if y0 is out of bounds
-                    if ref_y0 < 0:
-                        ref_y1 -= ref_y0
-                        ref_y0 = 0
-
-                    #Checks is x1 is out of bounds
-                    if ref_x1 > w:
-                        ref_x0 -= (ref_x1-w)
-                        ref_x1 = w
-
-                    #Checks if y1 is out of bounds
-                    if ref_y1 > h:
-                        ref_y0 -= (ref_y1-h)
-                        ref_y1 = h
+    arena_width = abs(init_x1-init_x2)
+    arena_height = abs(init_y1-init_y2)
 
 
-                    roi = pic[ref_y0:ref_y1,ref_x0:ref_x1]
-                    #Checks if the robot is on the top or bottom of the arena to determine its team
-                    team = 0
-                    #Bottom team
-                    if(centroid[0] >= h/2):
-                        team = 1
+    #img_scale: goes from the first image to the second image
+    img_scale = (nn_size[0]/initial_size[0])
 
-                    #Resizes robot image to the same size as the reference image then encodes it for CLIP
-                    img = ut.normalize_ref(roi)
-                    img = (img * 255).astype(np.uint8) if img.dtype != np.uint8 else img  # ensure uint8
-                    img = self.preprocess(Image.fromarray(img)).unsqueeze(0).to(self.device)
-                    with torch.no_grad():
-                        img = self.model.encode_image(img)
-                    #Identifies the battlebot and then updates the battlebot's location
-
-                    bot_id  = self.identify_battlebot(img,identified_battlebot_ids)
-
-                    
-                    for loc, r_id in enumerate(self.battlebots["id"]):
-                        if bot_id  == r_id:
-                            self.battlebots["loc"][loc] = centroid
-                            break
-                
-                    identified_battlebot_ids.append(bot_id )
-
-                #Updates Housebot Location value since there is always one battlebot
-            else:
-                if(label == "house_bot"):
-                    self.housebot["loc"] = centroid
-                    self.housebot["size"] = size
-
-    def identify_battlebot(self,pic,identified_battlebot_ids):
-        robot_id  = -1
-        robot_similarity = -1
-        # Goes through battlebot data and finds the most similar one
-        for id, ref_pic in zip(self.battlebots["id"], self.battlebots["ref_pic"]):
-            #Doesn't examine already identified robots
-            if(id not in identified_battlebot_ids):
-                #Finds the similarity between the reference picture and the battlebot
-                similarity = (pic @ ref_pic.T).item()
-
-                #Checks if it is the greatest similarity
-                if robot_similarity < similarity:
-                    robot_id = id
-                    robot_similarity = similarity
-                
-        return robot_id
-
-    #Returns the data on the battlebots and housebot for identification and graphing
-    def retrieve_data(self):
-        return self.battlebots, self.housebot
+    #Finds the arena bounds in pixels
+    arena_bounds = []
+    for val in init_bounds:
+        arena_bounds.append(round(val*img_scale))
     
+    #Height of boxed in arena divided by the height of the arena
+    scale = arena_size/arena_bounds[3]
 
-                    
+    return scale, arena_bounds
 
+"""
+find_real_loc: Calculates the real location of an object based on its pixel values
+    Input:
+        loc: an x,y tuple containing the location of the detected robot in pixels
+        arena_bounds: a xyxy tuple containing the information about the bounds of the arean
+        scale: a pixel to ft convertor
+    Output:
+        real_loc: an x,y tuple containing the location of the detected robot in feet
+"""
+def find_real_loc(loc,arena_bounds,scale):
+    real_loc = (loc[0]-arena_bounds[0],loc[1]-arena_bounds[1])
+    real_loc = (real_loc[0]*scale, real_loc[1]*scale)
+    real_loc = (round(real_loc[0],2),round(real_loc[1],2))
+    return real_loc
 
+"""
+process_loc: Processes the location of the robot to get the real location for all housebots and battlebots
+    Input:
+        battlebot_loc_px: A list of data containing the following information
+            loc: (x,y) tuple of the location in x,y coordinates in pixels
+            id: A numerical ID representing the robot
+        housebot_loc_px:  (x,y) tuple of the location in x,y coordinates in pixels
+        scale: a numerical value containing the ratio between pixels and ft
+        arena_bounds: The bounds of the arena in feet
+    Output:
+        battlebot_loc: A list of data containing the following information
+            loc_px: (x,y) tuple of the location in x,y coordinates in pixels
+            loc_ft: (x,y) tuple of the location in x,y coordinates in feet
+            id: A numerical ID representing the robot
+        housebot_loc: A dictionary containing the following information
+            loc_px: (x,y) tuple of the location in x,y coordinates in pixels
+            loc_ft: (x,y) tuple of the location in x,y coordinates in feet
+"""
+def process_loc(battlebot_loc_px,housebot_loc_px,scale,arena_bounds):
+    
+    #Battlebot Processing
+    battlebot_loc = {}
+    battlebot_loc["loc_px"] = battlebot_loc_px["loc"]
+    battlebot_loc["id"] = battlebot_loc_px["id"]
+    battlebot_loc["loc_ft"] = []
 
+    for loc_px in battlebot_loc_px["loc"]:
+        battlebot_loc["loc_ft"].append(find_real_loc(loc_px, arena_bounds,scale))
 
+    #housebot Processing
+    try:
+        housebot_loc = {}
+        housebot_loc["loc_px"] = housebot_loc_px
+        housebot_loc["loc_ft"] = find_real_loc(housebot_loc_px,arena_bounds,scale)
+    except:
+        housebot_loc = None
+   
 
+    return battlebot_loc, housebot_loc
 
+"""
+velocity_detector:A class for calculating robot velocity and direction of travel
+    Storage:
+        dt: The time difference between data in milliseconds
+        battlebot_history: a dictionary containing data on detected battlebots, if their id is not detected they are then deleted from the history
+            {z}: A dictionary representing the robots detected with the id z that contains the following:
+                prev_loc_ft: The previous location of the robot in feet
+                prev_loc_px: The previous location of the robot in pixels
+                curr_loc_ft: The current location of the robot in ft 
+                curr_loc_px: The current location of the robot in pixels
+        housebot_history: a dictionary containing data on the housebot which contains the following:
+            prev_loc_ft: The previous location of the robot in feet
+            prev_loc_px: The previous location of the robot in pixels
+            curr_loc_ft: The current location of the robot in ft 
+            curr_loc_px: The current location of the robot in pixels
+    Functions:
+        update_hist: updates the current location of every detected robot into the dataset
+        calc_Kinematics: calculates the velocity and heading of the robots in the arena
+"""
+class velocity_detector:
+    def __init__(self,dt):
+        self.dt = dt/1000
+        self.battlebot_history = {}
+        self.housebot_history = {}
+        self.housebot_Kinematics = {}
+    
+    """
+    update_hist: updates the current location of every detected robot into the dataset
+        Inputs:
+            battlebot_loc: A list of data containing the following information
+                loc_px: (x,y) tuple of the location in x,y coordinates in pixels
+                loc_ft: (x,y) tuple of the location in x,y coordinates in feet
+                id: A numerical ID representing the robot
+            housebot_loc: A dictionary containing the following information
+                loc_px: (x,y) tuple of the location in x,y coordinates in pixels
+                loc_ft: (x,y) tuple of the location in x,y coordinates in feet
+        Outputs:
+            None
+    """
+    def update_hist(self,battlebot_loc,housebot_loc):
+        #Clears battlebot_history of any information that is not relevant
+
+        bad_keys = []
+        for key in self.battlebot_history.keys():
+            if key not in battlebot_loc["id"]:
+                bad_keys.append(key)
+
+        for key in bad_keys:
+            del self.battlebot_history[key]
 
         
+        #Updates battlebot history
+        for loc_px,loc_ft,key in zip(battlebot_loc["loc_px"],battlebot_loc["loc_ft"],battlebot_loc["id"]):
+            #Creates a key if it doesn't exist with the assumption that the robot is at a standstill
+            if key not in self.battlebot_history.keys():
+                self.battlebot_history[key] = {}
+                self.battlebot_history[key]["prev_loc_ft"] = loc_ft
+                self.battlebot_history[key]["prev_loc_px"] = loc_px
+                self.battlebot_history[key]["curr_loc_ft"] = loc_ft
+                self.battlebot_history[key]["curr_loc_px"] = loc_px    
+                self.battlebot_history[key]["theta"] = -10
+            #Otherwise it updates the previous and current locations
+            else:
+                #Updates previous information
+                self.battlebot_history[key]["prev_loc_ft"] = self.battlebot_history[key]["curr_loc_ft"]
+                self.battlebot_history[key]["prev_loc_px"] = self.battlebot_history[key]["curr_loc_px"]
+                #Updates new information
+                self.battlebot_history[key]["curr_loc_ft"] = loc_ft
+                self.battlebot_history[key]["curr_loc_px"] = loc_px    
+        
+        #Updates housebot history
+
+        #Populates data if there is not history with the assumption it starts at a standstill
+        if "prev_loc_ft" not in self.housebot_history.keys() or self.housebot_history["prev_loc_ft"][0] == -10:
+            try:
+                self.housebot_history["prev_loc_ft"] = housebot_loc["loc_ft"]
+                self.housebot_history["prev_loc_px"] = housebot_loc["loc_px"]
+                self.housebot_history["curr_loc_ft"] = housebot_loc["loc_ft"]
+                self.housebot_history["curr_loc_px"] = housebot_loc["loc_px"]
+                self.housebot_history["theta"] = -10
+            except:
+                self.housebot_history["prev_loc_ft"] = (-10,-10)
+                self.housebot_history["prev_loc_px"] = (-10,-10)
+                self.housebot_history["curr_loc_ft"] = (-10,-10)
+                self.housebot_history["curr_loc_px"] = (-10,-10)
+                self.housebot_history["theta"] = -10
+        #Otherwise it updates the information
+        else:
+            try:
+                #Updates previous info
+                self.housebot_history["prev_loc_ft"] = self.housebot_history["curr_loc_ft"]
+                self.housebot_history["perv_loc_px"] = self.housebot_history["curr_loc_px"]
+                #Updates current information
+                self.housebot_history["curr_loc_ft"] = housebot_loc["loc_ft"]
+                self.housebot_history["curr_loc_px"] = housebot_loc["loc_px"]
+            except:
+                pass
+
+    """
+    calc_Kinematics: calculates the velocity and heading of the robots in the arena
+        Inputs:
+            None
+        Outputs:
+            battlebot_Kinematics: A list of data containing the following information
+                loc_px: (x,y) tuple of the location in x,y coordinates in pixels
+                loc_ft: (x,y) tuple of the location in x,y coordinates in feet
+                theta: The robot's current direction of travel
+                vel_px: The robot's velocity in pixels/s (for display)
+                vel_ft: The robot's velocity in ft/s
+            housebot_Kinematics: A dictionary containing the following data about the housebot
+                loc_px: (x,y) tuple of the location in x,y coordinates in pixels
+                loc_ft: (x,y) tuple of the location in x,y coordinates in feet
+                theta: The robot's current direction of travel
+                vel_px: The robot's velocity in pixels/s (for display)
+                vel_ft: The robot's velocity in ft/s
+    """
+    def calc_Kinematics(self):
+        #Calculate housebot velocity and orientation ==================================================
+        #Real Velocity Calculations -----------------------------------------------------
+        #Current and previous postion
+        prev_x_ft = self.housebot_history["prev_loc_ft"][0]
+        prev_y_ft = self.housebot_history["prev_loc_ft"][1]
+
+        curr_x_ft = self.housebot_history["curr_loc_ft"][0]
+        curr_y_ft = self.housebot_history["curr_loc_ft"][1]
+
+        #Velocity Calculations
+        housebot_dx_ft = prev_x_ft-curr_x_ft
+        housebot_dy_ft = prev_y_ft-curr_y_ft
+        housebot_vel_ft = round(math.sqrt(housebot_dx_ft**2 + housebot_dy_ft**2)/self.dt,2)
+
+        #Pixel Velocity (for display/other conversions) ---------------------------------------------
+        prev_x_px = self.housebot_history["prev_loc_px"][0]
+        prev_y_px = self.housebot_history["prev_loc_px"][1]
+
+        curr_x_px = self.housebot_history["curr_loc_px"][0]
+        curr_y_px = self.housebot_history["curr_loc_px"][1]
+
+        #Current and Previous positions
+        
+        housebot_dx_px = prev_x_px-curr_x_px
+        housebot_dy_px = prev_y_px-curr_y_px
+        housebot_vel_px = round(math.sqrt(housebot_dx_px**2 + housebot_dy_px**2)/self.dt)
+
+        #Calculates theta if the robot is moving(pixel values are probably slightly more accurate)
+        if housebot_vel_px > 0:
+            housebot_theta = math.atan2(housebot_dy_px,housebot_dx_px)
+            self.housebot_history["theta"] = housebot_theta
+        else:
+            housebot_theta = self.housebot_history["theta"]
+
+        #Storing housebot info
+        housebot_Kinematics = {}
+        housebot_Kinematics["loc_ft"] = self.housebot_history["curr_loc_ft"]
+        housebot_Kinematics["loc_px"] = self.housebot_history["curr_loc_px"]
+        housebot_Kinematics["theta"] = housebot_theta
+        housebot_Kinematics["vel_px"] = housebot_vel_px
+        housebot_Kinematics["vel_ft"] = housebot_vel_ft
+
+     
+
+        # Calculate velocity and orientation for the detected battlebots
+
+        battlebot_Kinematics = {}
+        battlebot_Kinematics["loc_ft"] = []
+        battlebot_Kinematics["loc_px"] = []
+        battlebot_Kinematics["theta"] = []
+        battlebot_Kinematics["vel_px"] = []
+        battlebot_Kinematics["vel_ft"] = []
+
+        for key in self.battlebot_history.keys():
+            battlebot_data = self.battlebot_history[key]
+            
+            #Real Velocity Calculations -----------------------------------------------------
+            #Current and previous postion
+            prev_x_ft = battlebot_data["prev_loc_ft"][0]
+            prev_y_ft = battlebot_data["prev_loc_ft"][1]
+
+            curr_x_ft = battlebot_data["curr_loc_ft"][0]
+            curr_y_ft = battlebot_data["curr_loc_ft"][1]
+
+            #Velocity Calculations
+            battlebot_dx_ft = prev_x_ft-curr_x_ft
+            battlebot_dy_ft = prev_y_ft-curr_y_ft
+            battlebot_vel_ft = round(math.sqrt(battlebot_dx_ft**2 + battlebot_dy_ft**2)/self.dt,2)
+
+            #Pixel Velocity (for display/other conversions) ---------------------------------------------
+            prev_x_px = battlebot_data["prev_loc_px"][0]
+            prev_y_px = battlebot_data["prev_loc_px"][1]
+
+            curr_x_px = battlebot_data["curr_loc_px"][0]
+            curr_y_px = battlebot_data["curr_loc_px"][1]
+
+            #Current and Previous positions
+            
+            battlebot_dx_px = prev_x_px-curr_x_px
+            battlebot_dy_px = prev_y_px-curr_y_px
+            battlebot_vel_px = round(math.sqrt(battlebot_dx_px**2 + battlebot_dy_px**2)/self.dt)
+
+            #Calculates theta if the robot is moving(pixel values are probably slightly more accurate)
+            if battlebot_vel_px != 0:
+                battlebot_theta = math.atan2(battlebot_dy_px,battlebot_dx_px)
+                self.battlebot_history[key]["theta"] = battlebot_theta
+            else:
+                battlebot_theta = battlebot_data["theta"]
+
+            #Storing battlebot info
+            battlebot_Kinematics["loc_ft"].append(battlebot_data["curr_loc_ft"])
+            battlebot_Kinematics["loc_px"].append(battlebot_data["curr_loc_px"])
+            battlebot_Kinematics["theta"].append(battlebot_theta)
+            battlebot_Kinematics["vel_px"].append(battlebot_vel_px)
+            battlebot_Kinematics["vel_ft"].append(battlebot_vel_ft)
+
+        return battlebot_Kinematics, housebot_Kinematics
+
 
     
+        
 
-        
-        
 
 
 
@@ -337,6 +419,10 @@ if __name__ == '__main__':
     vid_counter = 0
     pic_counter = 0
 
+    #For removing the background
+    fgbg = cv.createBackgroundSubtractorMOG2()
+    knn = cv.createBackgroundSubtractorKNN()
+    kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE,(3,3))
     for video in video_names:
         results = None
         pic_counter = 0
@@ -353,7 +439,6 @@ if __name__ == '__main__':
 
 
         while True:
-            start = time.perf_counter() # More precise than time.time()
             ret, frame = cap.read()
             if not ret:
                 print(f"Can't receive frame (stream end?). Exiting ...")
@@ -377,58 +462,70 @@ if __name__ == '__main__':
 
              #Transforms the frame to a top down view
             top_view = tI.transform_img(frame,vertices)
+            top_view = ut.normalize_nn(top_view)
 
-            # cv.imshow("Top Down View", top_view)
 
-            #Robot Detection ==========================================================================================
+            #Background removal =======================================================================================
+            #KNN subtracktor
+            # dynamic_mask = knn.apply(top_view)
+            # top_view_subtracted = cv.bitwise_and(top_view,top_view,mask = dynamic_mask)
 
-            #Checks robot location every 125 ms
-            if(calc_Time(fps,frames_AI) >= 125 or frames == 0):
-                results = model(top_view,conf = 0.3,verbose=False)[0]
+            #Robot Tracking ==========================================================================================
+
+            dt = 30 #time between tracking in milliseconds 
+
+            # Calculates the scale of the arena in the first frame
+            if frames == 0:
+                #Scales the arena
+                scale, arena_bounds = find_scale()
+                #Initializes the velocity detector
+                vD = velocity_detector(dt)
+
+
+            #Checks robot location every dt ms
+            if(calc_Time(fps,frames_AI) >= dt or frames == 0):
+                start = time.perf_counter() # More precise than time.time()
+
+                #Detects robots
+                results = model.track(top_view,conf = 0.3,verbose=False,persist = True)[0]
+
+                #Extracts data from the model
+                battlebot_loc_px, housebot_loc_px = extract_loc(results)
+
+                #Processes the model data to find the real location
+                battlebot_loc, housebot_loc = process_loc(battlebot_loc_px,housebot_loc_px,scale,arena_bounds)
+
+                #Updates the current position of the robots in the arena
+                vD.update_hist(battlebot_loc,housebot_loc)
+
+                #Calculates housebot and battlebot kinematics
+                battlebot_Kinematics, housebot_Kinematics = vD.calc_Kinematics()
+
+                
+                #     tR.init_data(data_static,scale,arena_bounds,top_view)
+                # else:
+                #     #Only works after first frame and ONLY if there is a major change in position
+                #     tR.update_housebot_kinematics(data_static,dynamic_mask)
+
+                end = time.perf_counter()
+
+                #Only matters after first frame calculated
+                if frames != 0:
+                    print(f"Inference Time: {end - start:.4f} seconds")
+
                 frames_AI = 0
 
-            #Shows results on video
+             # #Shows results on video
             annotated_frame = results.plot()
 
-            #Displays the frame
-            # cv.imshow("Robot Detection", annotated_frame)
+            # #Displays the frame
+            cv.imshow("Robot Detection", annotated_frame)
 
-            # Robot Identifier =========================================================================================
-            if(frames == 0):
-                identifier = robot_Identifier(top_view,results)
+           
 
-
-            
-            #Extracts centroid from the top view FOR TESTING!!!!!!!!!!
-            info = identifier.extract_data(results)
-
-            #Identifies robot position
-            identifier.update_Positions(top_view,results)
-            
-            #Shows identified robot IDs on top_view
-            identified = top_view
-
-            #gets robot data
-            battlebots, housebot = identifier.retrieve_data()
-            #Draws identification data for the housebot
-            cv.circle(identified,housebot["loc"],int(housebot["size"]/2), (0,255,0), 5)
-            
-            #Draws identification data for the battlebots
-            for l,d,t,rob_id in zip(battlebots["loc"],battlebots["size"],battlebots["team"],battlebots["id"]):
-                if(t == 0):
-                    cv.circle(identified,l, int(d/2), (0,0,255), 5)
-                else:
-                    cv.circle(identified,l, int(d/2), (255,0,0), 5)
                 
 
-            end = time.perf_counter()
-            print(f"Inference Time: {end - start:.4f} seconds")
-            # for l,c,d in zip(info["label"],info["centroid"],info["size"]):
-            #     if(l == "battle_bot"):
-            #         cv.circle(identified,c, int(d/2), (0,0,255), 5)
-            #     else:
-            #         cv.circle(identified,c, int(d/2), (0,255,0), 5)
-            cv.imshow("Centroid Detection", identified)
+            
 
 
             

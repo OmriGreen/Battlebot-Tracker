@@ -19,10 +19,14 @@ import sys
 def normalize_img(newImg):
     return cv.resize(newImg,(960,540))
 
-#Resizes reference image to the same square size
-def normalize_ref(ref):
-    resized = cv.resize(ref, (50, 50))
+#Reduces image size to optimize for nn detectino
+def normalize_nn(ref):
+    resized = cv.resize(ref, (400, 381))
     return resized.astype(np.uint8)
+
+#Increases image size for display
+def resize_display(img):
+    return cv.resize(img,(750,750))
         
 
 #Finds the intersection point of 2 lines
