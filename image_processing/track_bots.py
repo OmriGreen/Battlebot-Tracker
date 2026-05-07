@@ -13,8 +13,6 @@ from ultralytics import YOLO
 
 import torch
 
-import clip
-
 import sys
 
 import utils as ut
@@ -67,7 +65,6 @@ def extract_loc(r):
     housebot_loc = []
 
     #Extracting Data
-    print("DETECTION DEBUG")
     for bound, label,ident in zip(xyxy,labels,idents):
         #Calculates the location
         x_loc = round((bound[0]+bound[2])/2)
@@ -310,8 +307,8 @@ class velocity_detector:
         curr_y_ft = self.housebot_history["curr_loc_ft"][1]
 
         #Velocity Calculations
-        housebot_dx_ft = prev_x_ft-curr_x_ft
-        housebot_dy_ft = prev_y_ft-curr_y_ft
+        housebot_dx_ft = curr_x_ft-prev_x_ft
+        housebot_dy_ft = curr_y_ft-prev_y_ft
         housebot_vel_ft = round(math.sqrt(housebot_dx_ft**2 + housebot_dy_ft**2)/self.dt,2)
 
         #Pixel Velocity (for display/other conversions) ---------------------------------------------
@@ -323,8 +320,8 @@ class velocity_detector:
 
         #Current and Previous positions
         
-        housebot_dx_px = prev_x_px-curr_x_px
-        housebot_dy_px = prev_y_px-curr_y_px
+        housebot_dx_px = curr_x_px-prev_x_px
+        housebot_dy_px = curr_y_px-prev_y_px
         housebot_vel_px = round(math.sqrt(housebot_dx_px**2 + housebot_dy_px**2)/self.dt)
 
         #Calculates theta if the robot is moving(pixel values are probably slightly more accurate)
@@ -365,8 +362,8 @@ class velocity_detector:
             curr_y_ft = battlebot_data["curr_loc_ft"][1]
 
             #Velocity Calculations
-            battlebot_dx_ft = prev_x_ft-curr_x_ft
-            battlebot_dy_ft = prev_y_ft-curr_y_ft
+            battlebot_dx_ft = curr_x_ft-prev_x_ft
+            battlebot_dy_ft = curr_y_ft-prev_y_ft
             battlebot_vel_ft = round(math.sqrt(battlebot_dx_ft**2 + battlebot_dy_ft**2)/self.dt,2)
 
             #Pixel Velocity (for display/other conversions) ---------------------------------------------
@@ -378,8 +375,8 @@ class velocity_detector:
 
             #Current and Previous positions
             
-            battlebot_dx_px = prev_x_px-curr_x_px
-            battlebot_dy_px = prev_y_px-curr_y_px
+            battlebot_dx_px = curr_x_px-prev_x_px
+            battlebot_dy_px = curr_y_px-prev_y_px
             battlebot_vel_px = round(math.sqrt(battlebot_dx_px**2 + battlebot_dy_px**2)/self.dt)
 
             #Calculates theta if the robot is moving(pixel values are probably slightly more accurate)
@@ -400,7 +397,36 @@ class velocity_detector:
 
 
     
-        
+def draw_velocity(housebot_Kinematics, battlebot_Kinematics, top_view, circle_radius = 10, vel_thresh = 1):
+    #Draws a green circle in the center of detected housebots
+    center = housebot_Kinematics['loc_px']
+    radius = circle_radius
+    color = (0,255,0)
+    cv.circle(top_view, center,radius, color, -1)
+
+    #Draws a green line showing the velocity of the robot if it is known to be moving
+    start_point = center
+    vel = housebot_Kinematics["vel_px"]
+    theta = housebot_Kinematics['theta']
+    end_point = (round(start_point[0] - vel*math.cos(theta)), round(start_point[1] - vel*math.sin(theta)))
+    if(vel != 0 and housebot_Kinematics['vel_ft'] > vel_thresh):
+        cv.line(top_view,start_point,end_point,color,5)
+
+    for center, vel_px, theta, vel_ft in zip(battlebot_Kinematics['loc_px'],battlebot_Kinematics['vel_px'],battlebot_Kinematics['theta'],battlebot_Kinematics['vel_ft']):
+        #Draws a red circle in the center of detected battlebots
+        radius = circle_radius
+        color = (0,0,255)
+        cv.circle(top_view, center,radius, color, -1)
+
+        #Draws a red line showing the velocity of the robot if it is known to be moving
+        start_point = center
+        vel = vel_px
+        end_point = (round(start_point[0] + vel*math.cos(theta)), round(start_point[1] + vel*math.sin(theta)))
+        if(vel != 0 and vel_ft > vel_thresh):
+            cv.line(top_view,start_point,end_point,color,5)
+
+
+    return top_view
 
 
 
@@ -423,6 +449,9 @@ if __name__ == '__main__':
     fgbg = cv.createBackgroundSubtractorMOG2()
     knn = cv.createBackgroundSubtractorKNN()
     kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE,(3,3))
+
+    
+
     for video in video_names:
         results = None
         pic_counter = 0
@@ -435,6 +464,9 @@ if __name__ == '__main__':
             exit()
         
         fps = cap.get(cv.CAP_PROP_FPS)
+
+        #For real time display (Comment out for ML Implementation)
+        frame_time = 1000 / fps
 
 
 
@@ -458,6 +490,7 @@ if __name__ == '__main__':
                 tI = ut.transform_img(frame)
                 detectVertices = tI.detect_Vertices()
                 vertices = detectVertices[0]
+                time_List = []
 
 
              #Transforms the frame to a top down view
@@ -509,19 +542,23 @@ if __name__ == '__main__':
 
                 end = time.perf_counter()
 
+                time_List.append(round(end - start,3))
                 #Only matters after first frame calculated
-                if frames != 0:
-                    print(f"Inference Time: {end - start:.4f} seconds")
-
+                if frames != 0 and calc_Time(fps,frames_AI) >= dt:
+                    print(f"Inference Time: {np.mean(time_List)} seconds")
+                    time_List = []
+                
                 frames_AI = 0
 
              # #Shows results on video
-            annotated_frame = results.plot()
+            annotated_frame = draw_velocity(housebot_Kinematics, battlebot_Kinematics, top_view)
 
             # #Displays the frame
             cv.imshow("Robot Detection", annotated_frame)
 
-           
+            #For real time display (Comment out for ML Implementation)
+            elapsed = (time.time() - start) * 1000
+            wait = max(1, int(frame_time - elapsed))
 
                 
 
